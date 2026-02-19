@@ -45,7 +45,7 @@ numba==0.61.2
 numpy==2.2.0
 opt_einsum==3.4.0
 optree==0.17.0
-packaging==24.2
+packaging>=20,<25
 pandas==2.3.2
 parso==0.8.5
 pexpect==4.9.0

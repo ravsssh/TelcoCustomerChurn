@@ -1,146 +1,187 @@
 """
-Telco Customer Churn — Streamlit App (Home Page)
-
-Run with:
-    streamlit run app.py
+Telco Customer Churn — Business Dashboard
+Early Warning System for Customer Retention
 """
 
-import json
 from pathlib import Path
 
+import pandas as pd
 import streamlit as st
 
-ARTIFACTS_DIR = Path(__file__).parent / "artifacts"
-CONFIG_PATH = ARTIFACTS_DIR / "config.json"
+from src.inference import artifacts_exist, load_artifacts, predict_batch
+from src.preprocessing import load_raw_data
 
 st.set_page_config(
-    page_title="Telco Churn Predictor",
-    page_icon="📡",
+    page_title="Customer Churn Dashboard",
+    page_icon="📊",
     layout="wide",
-    initial_sidebar_state="expanded",
+    initial_sidebar_state="collapsed",
 )
+
+# ---------------------------------------------------------------------------
+# Guard: model artifacts must exist
+# ---------------------------------------------------------------------------
+if not artifacts_exist():
+    st.error(
+        "Model not found. Please run `python train.py` to generate the model first."
+    )
+    st.stop()
+
+
+# ---------------------------------------------------------------------------
+# Cached loaders
+# ---------------------------------------------------------------------------
+@st.cache_resource
+def get_artifacts():
+    return load_artifacts()
+
+
+@st.cache_data(show_spinner="Analyzing customer churn risk across all accounts...")
+def get_all_predictions():
+    artifacts = get_artifacts()
+    df_raw = load_raw_data()
+    result = predict_batch(df_raw, artifacts)
+    # Preserve the actual churn label for reference
+    result["ActualChurn"] = df_raw["Churn"].map({True: "Yes", False: "No"})
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Load data
+# ---------------------------------------------------------------------------
+artifacts = get_artifacts()
+df = get_all_predictions()
 
 # ---------------------------------------------------------------------------
 # Header
 # ---------------------------------------------------------------------------
-st.title("📡 Telco Customer Churn Predictor")
+st.title("📊 Customer Churn Dashboard")
 st.markdown(
-    "A **full ML lifecycle** application — train, evaluate, and deploy a "
-    "neural network for customer churn prediction."
+    "Monitor churn risk across all customers. "
+    "Customers are sorted from **highest to lowest risk** so your team can prioritise action."
 )
 st.divider()
 
 # ---------------------------------------------------------------------------
-# Artifact / model status banner
+# KPI cards
 # ---------------------------------------------------------------------------
-required_files = ["churn_model.keras", "scaler.pkl", "encoder.pkl", "config.json"]
-model_ready = all((ARTIFACTS_DIR / f).exists() for f in required_files)
+total = len(df)
+high   = int((df["RiskSegment"] == "High Risk").sum())
+medium = int((df["RiskSegment"] == "Medium Risk").sum())
+low_med = int((df["RiskSegment"] == "Low-Medium Risk").sum())
+low    = int((df["RiskSegment"] == "Low Risk").sum())
+avg_prob = df["ChurnProbability"].mean()
 
-if model_ready:
-    config = json.loads(CONFIG_PATH.read_text())
-    trained_at = config.get("trained_at", "unknown")
-    st.success(f"Model is ready — last trained at **{trained_at}**")
-else:
-    st.warning(
-        "No trained model found. Go to **Train Model** in the sidebar to train the model first."
-    )
+c1, c2, c3, c4, c5 = st.columns(5)
+c1.metric("Total Customers", f"{total:,}")
+c2.metric("🔴 High Risk",         f"{high:,}",    f"{high/total:.1%} of customers",    delta_color="inverse")
+c3.metric("🟠 Medium Risk",       f"{medium:,}",  f"{medium/total:.1%} of customers",  delta_color="inverse")
+c4.metric("🟡 Low-Medium Risk",   f"{low_med:,}", f"{low_med/total:.1%} of customers", delta_color="inverse")
+c5.metric("Avg Churn Probability", f"{avg_prob:.1%}")
 
 st.divider()
 
 # ---------------------------------------------------------------------------
-# KPI cards (only shown when model exists)
+# Filters
 # ---------------------------------------------------------------------------
-if model_ready:
-    st.subheader("Model Performance at a Glance")
-    m = config["metrics"]
-    t = config["threshold"]
-    cm = config["confusion_matrix"]
+f1, f2, f3 = st.columns([2, 2, 3])
 
-    col1, col2, col3, col4, col5 = st.columns(5)
-    col1.metric("Recall", f"{m['recall']:.1%}", help="Proportion of actual churners caught")
-    col2.metric("Precision", f"{m['precision']:.1%}", help="Proportion of flagged customers who actually churn")
-    col3.metric("ROC-AUC", f"{m['auc_roc']:.3f}", help="Ranking quality of the model")
-    col4.metric("F1-Score", f"{m['f1']:.3f}")
-    col5.metric("Threshold", f"{t['optimal']:.2f}", help="Classification threshold (not the default 0.5)")
-
-    st.divider()
-
-    # Quick confusion matrix summary
-    col_a, col_b = st.columns(2)
-    with col_a:
-        st.info(
-            f"At threshold **{t['optimal']}**, the model catches "
-            f"**{cm['tp']}** out of **{cm['tp'] + cm['fn']}** actual churners "
-            f"({cm['tp'] / (cm['tp'] + cm['fn']):.1%} recall), "
-            f"with **{cm['fp']}** false alarms."
-        )
-    with col_b:
-        tr = config.get("training", {})
-        st.info(
-            f"Trained on **{tr.get('train_size', '?')}** customers "
-            f"({tr.get('epochs_trained', '?')} epochs). "
-            f"Test set: **{tr.get('test_size', '?')}** customers."
-        )
-
-    st.divider()
+with f1:
+    risk_filter = st.selectbox(
+        "Risk Level",
+        ["All Customers", "🔴 High Risk", "🟠 Medium Risk", "🟡 Low-Medium Risk", "✅ Low Risk"],
+    )
+with f2:
+    contract_filter = st.selectbox(
+        "Contract Type",
+        ["All Contracts", "Month-to-month", "One year", "Two year"],
+    )
+with f3:
+    search = st.text_input("Search by Customer ID", placeholder="e.g. 1234-ABCD")
 
 # ---------------------------------------------------------------------------
-# Navigation guide
+# Filter logic
 # ---------------------------------------------------------------------------
-st.subheader("Navigation")
+_risk_map = {
+    "🔴 High Risk":        "High Risk",
+    "🟠 Medium Risk":      "Medium Risk",
+    "🟡 Low-Medium Risk":  "Low-Medium Risk",
+    "✅ Low Risk":         "Low Risk",
+}
 
-col1, col2, col3, col4 = st.columns(4)
+view = df.copy()
 
-with col1:
-    st.markdown("### 1️⃣ Train Model")
-    st.markdown(
-        "Trigger a full training run — fetches fresh data from IBM/GitHub, "
-        "runs preprocessing, SMOTE-Tomek, trains the neural network, "
-        "and saves all artifacts."
-    )
+if risk_filter != "All Customers":
+    view = view[view["RiskSegment"] == _risk_map[risk_filter]]
 
-with col2:
-    st.markdown("### 2️⃣ Model Performance")
-    st.markdown(
-        "Explore the confusion matrix, ROC curve, PR curve, feature importance, "
-        "training history, and an interactive business impact calculator."
-    )
+if contract_filter != "All Contracts":
+    view = view[view["Contract"] == contract_filter]
 
-with col3:
-    st.markdown("### 3️⃣ Single Prediction")
-    st.markdown(
-        "Enter a customer's details via form and get their churn probability, "
-        "risk segment badge, and personalised retention recommendations."
-    )
+if search.strip():
+    view = view[view["customerID"].str.contains(search.strip(), case=False, na=False)]
 
-with col4:
-    st.markdown("### 4️⃣ Batch Prediction")
-    st.markdown(
-        "Upload a CSV of customer records and download a results file with "
-        "churn probabilities, predictions, and risk segments for every row."
-    )
+# ---------------------------------------------------------------------------
+# Add display columns
+# ---------------------------------------------------------------------------
+_WARNING = {
+    "High Risk":       "🔴 Act Now",
+    "Medium Risk":     "🟠 Monitor",
+    "Low-Medium Risk": "🟡 Watch",
+    "Low Risk":        "✅ Safe",
+}
 
+view = view.copy()
+view["Early Warning"]  = view["RiskSegment"].map(_WARNING)
+view["Churn Risk (%)"] = (view["ChurnProbability"] * 100).round(1)
+
+# Sort highest risk first
+view = view.sort_values("ChurnProbability", ascending=False).reset_index(drop=True)
+
+# ---------------------------------------------------------------------------
+# Table
+# ---------------------------------------------------------------------------
+_COLS = {
+    "customerID":       "Customer ID",
+    "Contract":         "Contract",
+    "tenure":           "Tenure (months)",
+    "MonthlyCharges":   "Monthly Bill ($)",
+    "InternetService":  "Internet Service",
+    "Early Warning":    "Early Warning",
+    "Churn Risk (%)":   "Churn Risk (%)",
+}
+
+st.markdown(f"**{len(view):,} of {total:,} customers shown** — sorted by highest churn risk")
+
+st.dataframe(
+    view[list(_COLS.keys())].rename(columns=_COLS),
+    use_container_width=True,
+    hide_index=True,
+    height=520,
+    column_config={
+        "Churn Risk (%)": st.column_config.ProgressColumn(
+            "Churn Risk (%)",
+            min_value=0,
+            max_value=100,
+            format="%.1f%%",
+        ),
+        "Tenure (months)": st.column_config.NumberColumn(
+            "Tenure (months)",
+            format="%d mo",
+        ),
+        "Monthly Bill ($)": st.column_config.NumberColumn(
+            "Monthly Bill ($)",
+            format="$%.2f",
+        ),
+    },
+)
+
+# ---------------------------------------------------------------------------
+# Footer note
+# ---------------------------------------------------------------------------
 st.divider()
-
-# ---------------------------------------------------------------------------
-# Dataset and model info
-# ---------------------------------------------------------------------------
-with st.expander("About this project"):
-    st.markdown("""
-**Dataset**: IBM Telco Customer Churn — 7,043 customers × 21 features.
-
-**Model**: Keras Sequential neural network
-- Dense(128, relu, L2) → BatchNorm → Dropout(0.3)
-- Dense(64, relu, L2) → BatchNorm → Dropout(0.2)
-- Dense(32, relu) → Dropout(0.1) → Dense(1, sigmoid)
-
-**Key design choices**:
-- Threshold **0.20** (not the default 0.5) — tuned for maximum recall
-- SMOTE-Tomek resampling to address class imbalance
-- EarlyStopping monitors `val_recall` (not val_loss)
-
-**Top churn drivers** (from SHAP analysis in the notebook):
-`tenure`, `Contract_Month-to-month`, `InternetService_Fiber optic`
-
-**EDA and full analysis**: [AnalyticsAndModelling.ipynb](https://github.com/ravsssh/TelcoCustomerChurn/blob/master/AnalyticsAndModelling.ipynb)
-    """)
+threshold = artifacts["config"]["threshold"]["optimal"]
+st.caption(
+    f"Churn is predicted when probability ≥ **{threshold:.0%}**. "
+    "Risk levels: 🔴 ≥ 60%  ·  🟠 40–60%  ·  🟡 20–40%  ·  ✅ < 20%. "
+    "Use **Single Prediction** in the sidebar to analyse an individual customer."
+)

@@ -256,7 +256,7 @@ if uploaded_file is not None:
             )
 
         st.dataframe(
-            display_df.style.applymap(_color_risk, subset=["RiskSegment"]),
+            display_df.style.map(_color_risk, subset=["RiskSegment"]),
             use_container_width=True,
         )
 

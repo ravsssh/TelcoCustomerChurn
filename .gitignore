@@ -15,3 +15,9 @@ data/
 models/
 artifacts/
 .DS_Store
+
+# Override: allow pre-trained artifacts for Streamlit Cloud deployment
+!artifacts/churn_model.keras
+!artifacts/scaler.pkl
+!artifacts/encoder.pkl
+!artifacts/config.json

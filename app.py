@@ -41,8 +41,16 @@ def get_all_predictions():
     artifacts = get_artifacts()
     df_raw = load_raw_data()
     result = predict_batch(df_raw, artifacts)
-    # Preserve the actual churn label for reference
     result["ActualChurn"] = df_raw["Churn"].map({True: "Yes", False: "No"})
+
+    # Count active add-on services (value == "Yes")
+    _service_cols = [
+        "MultipleLines", "OnlineSecurity", "OnlineBackup",
+        "DeviceProtection", "TechSupport", "StreamingTV", "StreamingMovies",
+    ]
+    result["ServicesUsed"] = result[_service_cols].apply(
+        lambda row: int(sum(v == "Yes" for v in row)), axis=1
+    )
     return result
 
 
@@ -58,25 +66,26 @@ df = get_all_predictions()
 st.title("📊 Customer Churn Dashboard")
 st.markdown(
     "Monitor churn risk across all customers. "
-    "Customers are sorted from **highest to lowest risk** so your team can prioritise action."
+    "Customers are sorted from **highest to lowest risk** so your team can prioritise action. "
+    "**Click a row** to see the full customer profile."
 )
 st.divider()
 
 # ---------------------------------------------------------------------------
 # KPI cards
 # ---------------------------------------------------------------------------
-total = len(df)
-high   = int((df["RiskSegment"] == "High Risk").sum())
-medium = int((df["RiskSegment"] == "Medium Risk").sum())
-low_med = int((df["RiskSegment"] == "Low-Medium Risk").sum())
-low    = int((df["RiskSegment"] == "Low Risk").sum())
+total    = len(df)
+high     = int((df["RiskSegment"] == "High Risk").sum())
+medium   = int((df["RiskSegment"] == "Medium Risk").sum())
+low_med  = int((df["RiskSegment"] == "Low-Medium Risk").sum())
+low      = int((df["RiskSegment"] == "Low Risk").sum())
 avg_prob = df["ChurnProbability"].mean()
 
 c1, c2, c3, c4, c5 = st.columns(5)
-c1.metric("Total Customers", f"{total:,}")
-c2.metric("🔴 High Risk",         f"{high:,}",    f"{high/total:.1%} of customers",    delta_color="inverse")
-c3.metric("🟠 Medium Risk",       f"{medium:,}",  f"{medium/total:.1%} of customers",  delta_color="inverse")
-c4.metric("🟡 Low-Medium Risk",   f"{low_med:,}", f"{low_med/total:.1%} of customers", delta_color="inverse")
+c1.metric("Total Customers",      f"{total:,}")
+c2.metric("🔴 High Risk",         f"{high:,}",    f"{high/total:.1%}",    delta_color="inverse")
+c3.metric("🟠 Medium Risk",       f"{medium:,}",  f"{medium/total:.1%}",  delta_color="inverse")
+c4.metric("🟡 Low-Medium Risk",   f"{low_med:,}", f"{low_med/total:.1%}", delta_color="inverse")
 c5.metric("Avg Churn Probability", f"{avg_prob:.1%}")
 
 st.divider()
@@ -85,7 +94,6 @@ st.divider()
 # Filters
 # ---------------------------------------------------------------------------
 f1, f2, f3 = st.columns([2, 2, 3])
-
 with f1:
     risk_filter = st.selectbox(
         "Risk Level",
@@ -102,26 +110,23 @@ with f3:
 # ---------------------------------------------------------------------------
 # Filter logic
 # ---------------------------------------------------------------------------
-_risk_map = {
-    "🔴 High Risk":        "High Risk",
-    "🟠 Medium Risk":      "Medium Risk",
-    "🟡 Low-Medium Risk":  "Low-Medium Risk",
-    "✅ Low Risk":         "Low Risk",
+_RISK_MAP = {
+    "🔴 High Risk":       "High Risk",
+    "🟠 Medium Risk":     "Medium Risk",
+    "🟡 Low-Medium Risk": "Low-Medium Risk",
+    "✅ Low Risk":        "Low Risk",
 }
 
 view = df.copy()
-
 if risk_filter != "All Customers":
-    view = view[view["RiskSegment"] == _risk_map[risk_filter]]
-
+    view = view[view["RiskSegment"] == _RISK_MAP[risk_filter]]
 if contract_filter != "All Contracts":
     view = view[view["Contract"] == contract_filter]
-
 if search.strip():
     view = view[view["customerID"].str.contains(search.strip(), case=False, na=False)]
 
 # ---------------------------------------------------------------------------
-# Add display columns
+# Prepare display table
 # ---------------------------------------------------------------------------
 _WARNING = {
     "High Risk":       "🔴 Act Now",
@@ -133,30 +138,28 @@ _WARNING = {
 view = view.copy()
 view["Early Warning"]  = view["RiskSegment"].map(_WARNING)
 view["Churn Risk (%)"] = (view["ChurnProbability"] * 100).round(1)
-
-# Sort highest risk first
 view = view.sort_values("ChurnProbability", ascending=False).reset_index(drop=True)
 
-# ---------------------------------------------------------------------------
-# Table
-# ---------------------------------------------------------------------------
-_COLS = {
-    "customerID":       "Customer ID",
-    "Contract":         "Contract",
-    "tenure":           "Tenure (months)",
-    "MonthlyCharges":   "Monthly Bill ($)",
-    "InternetService":  "Internet Service",
-    "Early Warning":    "Early Warning",
-    "Churn Risk (%)":   "Churn Risk (%)",
+TABLE_COLS = {
+    "customerID":      "Customer ID",
+    "Early Warning":   "Early Warning",
+    "Churn Risk (%)":  "Churn Risk (%)",
+    "Contract":        "Contract",
+    "tenure":          "Tenure (months)",
+    "MonthlyCharges":  "Monthly Bill ($)",
+    "ServicesUsed":    "Services Used",
+    "InternetService": "Internet",
 }
 
 st.markdown(f"**{len(view):,} of {total:,} customers shown** — sorted by highest churn risk")
 
-st.dataframe(
-    view[list(_COLS.keys())].rename(columns=_COLS),
+event = st.dataframe(
+    view[list(TABLE_COLS.keys())].rename(columns=TABLE_COLS),
     use_container_width=True,
     hide_index=True,
-    height=520,
+    height=480,
+    on_select="rerun",
+    selection_mode="single-row",
     column_config={
         "Churn Risk (%)": st.column_config.ProgressColumn(
             "Churn Risk (%)",
@@ -172,11 +175,93 @@ st.dataframe(
             "Monthly Bill ($)",
             format="$%.2f",
         ),
+        "Services Used": st.column_config.NumberColumn(
+            "Services Used",
+            format="%d / 7",
+            help="Number of active add-on services (out of 7 possible)",
+        ),
     },
 )
 
 # ---------------------------------------------------------------------------
-# Footer note
+# Customer detail panel (shown when a row is selected)
+# ---------------------------------------------------------------------------
+selected_rows = event.selection.rows if event and event.selection else []
+
+if selected_rows:
+    idx = selected_rows[0]
+    row = view.iloc[idx]
+
+    st.divider()
+    st.subheader(f"Customer Profile — {row['customerID']}")
+
+    risk_colour = {
+        "High Risk":       "red",
+        "Medium Risk":     "orange",
+        "Low-Medium Risk": "orange",
+        "Low Risk":        "green",
+    }.get(row["RiskSegment"], "blue")
+    warning_label = _WARNING.get(row["RiskSegment"], row["RiskSegment"])
+    st.markdown(
+        f"**Churn Risk: {row['Churn Risk (%)']:.1f}%** &nbsp;|&nbsp; "
+        f":{risk_colour}[{warning_label}]"
+    )
+
+    d1, d2, d3 = st.columns(3)
+
+    # ── Demographics ──────────────────────────────────────────────────────
+    with d1:
+        st.markdown("#### 👤 Demographics")
+        senior_label = "Yes (65+)" if row["SeniorCitizen"] else "No"
+        st.markdown(f"""
+| Field | Value |
+|---|---|
+| **Gender** | {row['gender']} |
+| **Senior Citizen** | {senior_label} |
+| **Has Partner** | {row['Partner']} |
+| **Has Dependents** | {row['Dependents']} |
+""")
+
+    # ── Services ─────────────────────────────────────────────────────────
+    with d2:
+        st.markdown(f"#### 📡 Services ({int(row['ServicesUsed'])} / 7 active)")
+        _service_labels = {
+            "PhoneService":      "Phone Service",
+            "MultipleLines":     "Multiple Lines",
+            "InternetService":   "Internet Service",
+            "OnlineSecurity":    "Online Security",
+            "OnlineBackup":      "Online Backup",
+            "DeviceProtection":  "Device Protection",
+            "TechSupport":       "Tech Support",
+            "StreamingTV":       "Streaming TV",
+            "StreamingMovies":   "Streaming Movies",
+        }
+        for col, label in _service_labels.items():
+            val = row[col]
+            if val == "Yes":
+                st.markdown(f"✅ {label}")
+            elif val == "No":
+                st.markdown(f"☐ {label}")
+            else:
+                st.markdown(f"➖ {label} *({val})*")
+
+    # ── Account & Contract ────────────────────────────────────────────────
+    with d3:
+        st.markdown("#### 📋 Account & Contract")
+        paperless = "Yes" if row["PaperlessBilling"] == "Yes" else "No"
+        st.markdown(f"""
+| Field | Value |
+|---|---|
+| **Contract** | {row['Contract']} |
+| **Payment Method** | {row['PaymentMethod']} |
+| **Paperless Billing** | {paperless} |
+| **Tenure** | {int(row['tenure'])} months |
+| **Monthly Bill** | ${row['MonthlyCharges']:.2f} |
+| **Total Charges** | ${row['TotalCharges']:.2f} |
+""")
+
+# ---------------------------------------------------------------------------
+# Footer
 # ---------------------------------------------------------------------------
 st.divider()
 threshold = artifacts["config"]["threshold"]["optimal"]

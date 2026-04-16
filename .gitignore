@@ -13,5 +13,11 @@ out/
 # Data and models
 data/
 models/
-artifacts/
 .DS_Store
+
+# Ignore artifacts dir contents, but allow pre-trained files for Streamlit Cloud deployment
+artifacts/*
+!artifacts/churn_model.keras
+!artifacts/scaler.pkl
+!artifacts/encoder.pkl
+!artifacts/config.json
